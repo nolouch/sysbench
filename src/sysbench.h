@@ -110,6 +110,11 @@ typedef struct {
 
   uint64_t queue_length;        /* Event queue length (tx_rate-only) */
   uint64_t concurrency;         /* Number of in-flight events (tx_rate-only) */
+  uint64_t scheduled, offered, sent, started, completed;
+  uint64_t scheduled_total, offered_total, sent_total, started_total,
+           completed_total;
+  uint64_t send_delay_ns_sum, send_delay_ns_max;
+  uint64_t send_delay_ns_sum_total, send_delay_ns_max_total;
 } sb_stat_t;
 
 /* Commands */

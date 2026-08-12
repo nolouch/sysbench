@@ -142,7 +142,11 @@ static sb_barrier_t report_barrier;
 /* structures to handle queue of events, needed for tx_rate mode */
 static pthread_mutex_t    queue_mutex;
 static pthread_cond_t     queue_cond;
-static uint64_t           queue_array[MAX_QUEUE_LEN] CK_CC_CACHELINE;
+typedef struct {
+  uint64_t deadline_ns;
+  uint64_t offered_ns;
+} sb_scheduled_event_t;
+static sb_scheduled_event_t queue_array[MAX_QUEUE_LEN] CK_CC_CACHELINE;
 static ck_ring_buffer_t   queue_ring_buffer[MAX_QUEUE_LEN] CK_CC_CACHELINE;
 static ck_ring_t          queue_ring CK_CC_CACHELINE;
 
@@ -150,8 +154,24 @@ static int report_thread_created CK_CC_CACHELINE;
 static int checkpoints_thread_created;
 static int eventgen_thread_created;
 
+typedef enum { TEL_SCHEDULED, TEL_OFFERED, TEL_SENT, TEL_STARTED,
+               TEL_COMPLETED, TEL_COUNT } telemetry_counter_t;
+static uint64_t telemetry[TEL_COUNT] CK_CC_CACHELINE;
+static uint64_t telemetry_prev[TEL_COUNT];
+static uint64_t send_delay_ns_sum CK_CC_CACHELINE;
+static uint64_t send_delay_ns_max CK_CC_CACHELINE;
+static uint64_t send_delay_ns_sum_prev;
+
+static void telemetry_max(uint64_t *target, uint64_t value)
+{
+  uint64_t old = ck_pr_load_64(target);
+  while (old < value && !ck_pr_cas_64_value(target, old, value, &old))
+    ;
+}
+
 /* per-thread timers for response time stats */
 static sb_timer_t *timers;
+static uint64_t *event_deadlines;
 
 /* Temporary copy of timers for checkpoint reports */
 static sb_timer_t *timers_copy;
@@ -193,9 +213,27 @@ void sb_report_intermediate(sb_stat_t *stat)
                 sb_globals.percentile,
                 SEC2MS(stat->latency_pct));
   if (sb_globals.tx_rate > 0)
+  {
     log_timestamp(LOG_NOTICE, stat->time_total,
                   "queue length: %" PRIu64 " concurrency: %" PRIu64,
                   stat->queue_length, stat->concurrency);
+    log_timestamp(LOG_NOTICE, stat->time_total,
+      "client_telemetry_v1 interval_s=%.6f scheduled=%" PRIu64
+      " offered=%" PRIu64 " sent=%" PRIu64 " started=%" PRIu64
+      " completed=%" PRIu64 " scheduled_total=%" PRIu64
+      " offered_total=%" PRIu64 " sent_total=%" PRIu64
+      " started_total=%" PRIu64 " completed_total=%" PRIu64
+      " send_delay_avg_ms=%.6f send_delay_max_ms=%.6f"
+      " queue=%" PRIu64 " inflight=%" PRIu64 " errors=%" PRIu64
+      " timeouts=%u",
+      stat->time_interval, stat->scheduled, stat->offered, stat->sent,
+      stat->started, stat->completed, stat->scheduled_total,
+      stat->offered_total, stat->sent_total, stat->started_total,
+      stat->completed_total,
+      stat->started ? NS2MS(stat->send_delay_ns_sum) / stat->started : 0.0,
+      NS2MS(stat->send_delay_ns_max), stat->queue_length, stat->concurrency,
+      stat->errors, sb_globals.forced_shutdown_in_progress ? 1U : 0U);
+  }
 }
 
 
@@ -244,6 +282,18 @@ static void report_intermediate(void)
   {
     stat.queue_length = ck_ring_size(&queue_ring);
     stat.concurrency = ck_pr_load_int(&sb_globals.concurrency);
+    for (unsigned int i = 0; i < TEL_COUNT; i++)
+    {
+      const uint64_t now = ck_pr_load_64(&telemetry[i]);
+      ((uint64_t *)&stat.scheduled)[i] = now - telemetry_prev[i];
+      ((uint64_t *)&stat.scheduled_total)[i] = now;
+      telemetry_prev[i] = now;
+    }
+    stat.send_delay_ns_sum_total = ck_pr_load_64(&send_delay_ns_sum);
+    stat.send_delay_ns_sum = stat.send_delay_ns_sum_total - send_delay_ns_sum_prev;
+    send_delay_ns_sum_prev = stat.send_delay_ns_sum_total;
+    stat.send_delay_ns_max = ck_pr_fas_64(&send_delay_ns_max, 0);
+    stat.send_delay_ns_max_total = stat.send_delay_ns_max;
   }
 
   if (current_test && current_test->ops.report_intermediate)
@@ -736,8 +786,10 @@ bool sb_more_events(int thread_id)
 
     ck_pr_inc_int(&sb_globals.concurrency);
 
-    timers[thread_id].queue_time = sb_timer_value(&sb_exec_timer) -
-      ((uint64_t *) ptr)[0];
+    sb_scheduled_event_t *scheduled = ptr;
+    const uint64_t now = sb_timer_value(&sb_exec_timer);
+    timers[thread_id].queue_time = now - scheduled->offered_ns;
+    event_deadlines[thread_id] = scheduled->deadline_ns;
   }
 
   return true;
@@ -746,6 +798,15 @@ bool sb_more_events(int thread_id)
 
 void sb_event_start(int thread_id)
 {
+  if (sb_globals.tx_rate > 0)
+  {
+    const uint64_t now = sb_timer_value(&sb_exec_timer);
+    const uint64_t deadline = event_deadlines[thread_id];
+    const uint64_t delay = now > deadline ? now - deadline : 0;
+    ck_pr_faa_64(&telemetry[TEL_STARTED], 1);
+    ck_pr_faa_64(&send_delay_ns_sum, delay);
+    telemetry_max(&send_delay_ns_max, delay);
+  }
   sb_timer_start(&timers[thread_id]);
 }
 
@@ -764,6 +825,7 @@ void sb_event_stop(int thread_id)
 
   if (sb_globals.tx_rate > 0)
   {
+    ck_pr_faa_64(&telemetry[TEL_COMPLETED], 1);
     ck_pr_dec_int(&sb_globals.concurrency);
   }
 }
@@ -895,6 +957,7 @@ static void *eventgen_thread_proc(void *arg)
     curr_ns = sb_timer_value(&sb_exec_timer);
     intr_ns = sb_rand_exp(lambda);
     next_ns += intr_ns;
+    ck_pr_faa_64(&telemetry[TEL_SCHEDULED], 1);
 
     if (sb_globals.max_time_ns > 0 &&
         SB_UNLIKELY(curr_ns >= sb_globals.max_time_ns))
@@ -908,7 +971,9 @@ static void *eventgen_thread_proc(void *arg)
       sb_nanosleep(next_ns - curr_ns);
 
     /* Enqueue a new event */
-    queue_array[i] = sb_timer_value(&sb_exec_timer);
+    queue_array[i].deadline_ns = next_ns;
+    queue_array[i].offered_ns = sb_timer_value(&sb_exec_timer);
+    ck_pr_faa_64(&telemetry[TEL_OFFERED], 1);
     if (ck_ring_enqueue_spmc(&queue_ring, queue_ring_buffer,
                              &queue_array[i]) == false)
     {
@@ -919,6 +984,7 @@ static void *eventgen_thread_proc(void *arg)
       pthread_cond_broadcast(&queue_cond);
       return NULL;
     }
+    ck_pr_faa_64(&telemetry[TEL_SENT], 1);
 
     /* Wake up one waiting thread, if there are any */
     pthread_cond_signal(&queue_cond);
@@ -1417,9 +1483,10 @@ static int init(void)
 
   /* Initialize timers */
   timers = sb_alloc_per_thread_array(sizeof(sb_timer_t));
+  event_deadlines = sb_alloc_per_thread_array(sizeof(uint64_t));
   timers_copy = sb_alloc_per_thread_array(sizeof(sb_timer_t));
 
-  if (timers == NULL || timers_copy == NULL)
+  if (timers == NULL || timers_copy == NULL || event_deadlines == NULL)
   {
     log_text(LOG_FATAL, "Memory allocation failure");
     return 1;
@@ -1599,6 +1666,7 @@ end:
   sb_thread_done();
 
   free(timers);
+  free(event_deadlines);
   free(timers_copy);
 
   free(sb_globals.argv);
