@@ -267,6 +267,8 @@ static void report_intermediate(void)
 {
   sb_stat_t stat;
   sb_counters_t cnt;
+  const double percentiles[] = {sb_globals.percentile, 99.0, 99.9};
+  double values[3];
 
   /*
     sb_globals.report_interval may be set to 0 by the master thread to
@@ -386,8 +388,6 @@ void sb_report_cumulative(sb_stat_t *stat)
   for(unsigned i = 0; i < nthreads; i++)
     t = sb_timer_merge(&t, &timers_copy[i]);
 
-  const double percentiles[] = {sb_globals.percentile, 99.0, 99.9};
-  double values[3];
   /* Calculate and print events distribution by threads */
   const double events_avg = (double) t.events / nthreads;
   const double time_avg = stat->latency_sum / nthreads;
@@ -438,6 +438,8 @@ void sb_report_cumulative(sb_stat_t *stat)
 static void checkpoint(sb_stat_t *stat)
 {
   sb_counters_t cnt;
+  const double percentiles[] = {sb_globals.percentile, 99.0, 99.9};
+  double values[3];
 
   sb_counters_agg_cumulative(cnt);
   report_get_common_stat(stat, cnt);
