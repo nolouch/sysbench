@@ -10,6 +10,9 @@ trap 'rm -f "$output"' EXIT
 
 # Existing human output remains present.
 grep -Eq 'queue length: [0-9]+ concurrency: [0-9]+' "$output"
+# SQL/Lua workloads use db_report_intermediate(), not the default CPU handler.
+grep -A40 '^void db_report_intermediate' src/db_driver.c |
+  grep -q 'sb_report_client_telemetry(stat)'
 # New line is one stable, machine-parseable record with both interval and
 # cumulative lifecycle counters and deadline-to-start delay.
 grep -Eq 'client_telemetry_v1 interval_s=[0-9.]+ scheduled=[1-9][0-9]* offered=[1-9][0-9]* sent=[1-9][0-9]* started=[1-9][0-9]* completed=[1-9][0-9]* scheduled_total=[1-9][0-9]* offered_total=[1-9][0-9]* sent_total=[1-9][0-9]* started_total=[1-9][0-9]* completed_total=[1-9][0-9]* send_delay_avg_ms=[0-9.]+ send_delay_max_ms=[0-9.]+ queue=[0-9]+ inflight=[0-9]+ errors=0 timeouts=0' "$output"

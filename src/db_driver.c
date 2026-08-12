@@ -1105,6 +1105,7 @@ void db_report_intermediate(sb_stat_t *stat)
     log_timestamp(LOG_NOTICE, stat->time_total,
                   "queue length: %" PRIu64", concurrency: %" PRIu64,
                   stat->queue_length, stat->concurrency);
+    sb_report_client_telemetry(stat);
   }
 }
 

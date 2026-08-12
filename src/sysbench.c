@@ -220,6 +220,12 @@ void sb_report_intermediate(sb_stat_t *stat)
     log_timestamp(LOG_NOTICE, stat->time_total,
                   "queue length: %" PRIu64 " concurrency: %" PRIu64,
                   stat->queue_length, stat->concurrency);
+    sb_report_client_telemetry(stat);
+  }
+}
+
+void sb_report_client_telemetry(sb_stat_t *stat)
+{
     log_timestamp(LOG_NOTICE, stat->time_total,
       "client_telemetry_v1 interval_s=%.6f scheduled=%" PRIu64
       " offered=%" PRIu64 " sent=%" PRIu64 " started=%" PRIu64
@@ -236,7 +242,6 @@ void sb_report_intermediate(sb_stat_t *stat)
       stat->started ? NS2MS(stat->send_delay_ns_sum) / stat->started : 0.0,
       NS2MS(stat->send_delay_ns_max), stat->queue_length, stat->concurrency,
       stat->errors, sb_globals.forced_shutdown_in_progress ? 1U : 0U);
-  }
 }
 
 

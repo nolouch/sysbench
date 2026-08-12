@@ -239,6 +239,7 @@ void sb_print_test_options(void);
 
 /* Default intermediate reports handler */
 void sb_report_intermediate(sb_stat_t *stat);
+void sb_report_client_telemetry(sb_stat_t *stat);
 
 /* Default cumulative reports handler */
 void sb_report_cumulative(sb_stat_t *stat);
