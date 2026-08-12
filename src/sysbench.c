@@ -790,7 +790,12 @@ bool sb_more_events(int thread_id)
   {
     void *ptr = NULL;
     if (!ck_ring_dequeue_spmc(&queue_ring, queue_ring_buffer, &ptr))
+    {
+      /* Wake peers which may still be sleeping in the ordinary rate-mode
+         wait loop.  Once admission has stopped, an empty queue is terminal. */
+      pthread_cond_broadcast(&queue_cond);
       return false;
+    }
 
     ck_pr_inc_int(&sb_globals.concurrency);
     sb_scheduled_event_t *scheduled = ptr;
@@ -825,7 +830,15 @@ bool sb_more_events(int thread_id)
     while (!ck_ring_dequeue_spmc(&queue_ring, queue_ring_buffer, &ptr) &&
            !sb_globals.error)
     {
+      if (admission_stop_requested)
+        return false;
+
       pthread_mutex_lock(&queue_mutex);
+      if (admission_stop_requested)
+      {
+        pthread_mutex_unlock(&queue_mutex);
+        return false;
+      }
       pthread_cond_wait(&queue_cond, &queue_mutex);
       pthread_mutex_unlock(&queue_mutex);
 
