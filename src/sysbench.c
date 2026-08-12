@@ -60,6 +60,7 @@
 #ifdef HAVE_SIGNAL_H
 # include <signal.h>
 #endif
+#include <poll.h>
 #ifdef HAVE_LIMITS_H
 # include <limits.h>
 #endif
@@ -163,12 +164,37 @@ static uint64_t send_delay_ns_sum CK_CC_CACHELINE;
 static uint64_t send_delay_ns_max CK_CC_CACHELINE;
 static uint64_t send_delay_ns_sum_prev;
 static volatile sig_atomic_t admission_stop_requested;
+static int admission_stop_pipe[2] = {-1, -1};
 static uint64_t drain_started_ns CK_CC_CACHELINE;
 
 static void sigusr2_admission_stop_handler(int sig)
 {
   if (sig == SIGUSR2)
+  {
     admission_stop_requested = 1;
+    if (admission_stop_pipe[1] >= 0)
+    {
+      const char byte = 1;
+      (void) write(admission_stop_pipe[1], &byte, sizeof(byte));
+    }
+  }
+}
+
+static int wait_event_deadline_or_stop(uint64_t ns)
+{
+  struct pollfd pfd = {admission_stop_pipe[0], POLLIN, 0};
+  struct timespec timeout = {ns / NS_PER_SEC, ns % NS_PER_SEC};
+  int rc;
+  do
+    rc = ppoll(&pfd, 1, &timeout, NULL);
+  while (rc < 0 && errno == EINTR && !admission_stop_requested);
+  if (rc > 0)
+  {
+    char bytes[64];
+    while (read(admission_stop_pipe[0], bytes, sizeof(bytes)) > 0)
+      ;
+  }
+  return admission_stop_requested;
 }
 
 static void stop_event_admission(void)
@@ -1045,8 +1071,11 @@ static void *eventgen_thread_proc(void *arg)
       return NULL;
     }
 
-    if (next_ns > curr_ns)
-      sb_nanosleep(next_ns - curr_ns);
+    if (next_ns > curr_ns && wait_event_deadline_or_stop(next_ns - curr_ns))
+    {
+      stop_event_admission();
+      return NULL;
+    }
 
     /* SIGUSR2 may arrive while sleeping. Never offer/enqueue after it. */
     if (admission_stop_requested)
@@ -1216,6 +1245,11 @@ static int run_test(sb_test_t *test)
 
   admission_stop_requested = 0;
   ck_pr_store_64(&drain_started_ns, 0);
+  if (pipe2(admission_stop_pipe, O_NONBLOCK | O_CLOEXEC) != 0)
+  {
+    log_errno(LOG_FATAL, "Creating admission stop pipe failed");
+    return 1;
+  }
   signal(SIGUSR2, sigusr2_admission_stop_handler);
 
   /* initialize test */
