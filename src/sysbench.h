@@ -92,6 +92,8 @@ typedef struct {
   double   time_total;          /* Time elapsed since the benchmark start */
 
   double   latency_pct;         /* Latency percentile */
+  double   latency_p99;         /* Fixed P99 latency for RC evidence */
+  double   latency_p999;        /* Fixed P99.9 latency for RC evidence */
 
   double   latency_min;         /* Minimum latency (cumulative reports only) */
   double   latency_max;         /* Maximum latency (cumulative reports only) */

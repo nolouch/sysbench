@@ -95,6 +95,14 @@ void sb_histogram_update(sb_histogram_t *h, double value);
 double sb_histogram_get_pct_intermediate(sb_histogram_t *h, double percentile);
 
 /*
+  Calculate multiple percentile values from one intermediate histogram
+  snapshot, then merge that snapshot into cumulative values atomically.
+*/
+void sb_histogram_get_pcts_intermediate(sb_histogram_t *h,
+                                        const double *percentiles,
+                                        double *values, size_t count);
+
+/*
   Merge intermediate histogram values into cumulative ones and calculate a given
   percentile value from the cumulative array.
 */
@@ -107,6 +115,14 @@ double sb_histogram_get_pct_cumulative(sb_histogram_t *h, double percentile);
    calculation. This is currently used only by 'checkpoint' reports.
 */
 double sb_histogram_get_pct_checkpoint(sb_histogram_t *h, double percentile);
+
+/*
+  Calculate multiple percentile values from one cumulative checkpoint and
+  atomically reset the cumulative histogram.
+*/
+void sb_histogram_get_pcts_checkpoint(sb_histogram_t *h,
+                                      const double *percentiles,
+                                      double *values, size_t count);
 
 /*
   Print a given histogram to stdout

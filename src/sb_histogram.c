@@ -113,12 +113,31 @@ void sb_histogram_update(sb_histogram_t *h, double value)
 }
 
 
-double sb_histogram_get_pct_intermediate(sb_histogram_t *h,
-                                         double percentile)
+static double get_pct_from_array(sb_histogram_t *h, const uint64_t *array,
+                                 uint64_t nevents, double percentile)
+{
+  size_t   i;
+  uint64_t ncur, nmax;
+
+  nmax = floor(nevents * percentile / 100 + 0.5);
+  ncur = 0;
+  for (i = 0; i < h->array_size; i++)
+  {
+    ncur += array[i];
+    if (ncur >= nmax)
+      break;
+  }
+
+  return exp(i / h->range_mult + h->range_deduct);
+}
+
+
+void sb_histogram_get_pcts_intermediate(sb_histogram_t *h,
+                                         const double *percentiles,
+                                         double *values, size_t count)
 {
   size_t   i, s;
-  uint64_t nevents, ncur, nmax;
-  double   res;
+  uint64_t nevents;
 
   nevents = 0;
 
@@ -156,22 +175,8 @@ double sb_histogram_get_pct_intermediate(sb_histogram_t *h,
     }
   }
 
-  /*
-    Now that we have an aggregate 'snapshot' of current arrays and the total
-    number of events in it, calculate the current, intermediate percentile value
-    to return.
-  */
-  nmax = floor(nevents * percentile / 100 + 0.5);
-
-  ncur = 0;
-  for (i = 0; i < size; i++)
-  {
-    ncur += array[i];
-    if (ncur >= nmax)
-      break;
-  }
-
-  res = exp(i / h->range_mult + h->range_deduct);
+  for (i = 0; i < count; i++)
+    values[i] = get_pct_from_array(h, array, nevents, percentiles[i]);
 
   /* Finally, add temp_array into accumulated values in cumulative_array. */
   for (i = 0; i < size; i++)
@@ -182,8 +187,16 @@ double sb_histogram_get_pct_intermediate(sb_histogram_t *h,
   h->cumulative_nevents += nevents;
 
   pthread_rwlock_unlock(&h->lock);
+}
 
-  return res;
+
+double sb_histogram_get_pct_intermediate(sb_histogram_t *h,
+                                         double percentile)
+{
+  double value;
+
+  sb_histogram_get_pcts_intermediate(h, &percentile, &value, 1);
+  return value;
 }
 
 
@@ -264,7 +277,18 @@ double sb_histogram_get_pct_cumulative(sb_histogram_t *h, double percentile)
 double sb_histogram_get_pct_checkpoint(sb_histogram_t *h,
                                        double percentile)
 {
-  double   res;
+  double value;
+
+  sb_histogram_get_pcts_checkpoint(h, &percentile, &value, 1);
+  return value;
+}
+
+
+void sb_histogram_get_pcts_checkpoint(sb_histogram_t *h,
+                                      const double *percentiles,
+                                      double *values, size_t count)
+{
+  size_t i;
 
   /*
     This can be called concurrently with other sb_histogram_get_pct_*()
@@ -277,15 +301,14 @@ double sb_histogram_get_pct_checkpoint(sb_histogram_t *h,
 
   merge_intermediate_into_cumulative(h);
 
-  res = get_pct_cumulative(h, percentile);
+  for (i = 0; i < count; i++)
+    values[i] = get_pct_cumulative(h, percentiles[i]);
 
   /* Reset the cumulative array */
   memset(h->cumulative_array, 0, h->array_size * sizeof(uint64_t));
   h->cumulative_nevents = 0;
 
   pthread_rwlock_unlock(&h->lock);
-
-  return res;
 }
 
 

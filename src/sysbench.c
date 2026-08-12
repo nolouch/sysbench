@@ -80,7 +80,7 @@
 #define VERSION_STRING PACKAGE" "PACKAGE_VERSION SB_GIT_SHA
 
 /* Maximum queue length for the tx-rate mode. Must be a power of 2 */
-#define MAX_QUEUE_LEN 131072
+#define MAX_QUEUE_LEN 8388608
 
 /*
   Extra thread ID assigned to background threads. This may be used as an index
@@ -192,6 +192,10 @@ static void print_run_mode(sb_test_t *);
 #ifdef HAVE_ALARM
 static void sigalrm_thread_init_timeout_handler(int sig)
 {
+  log_timestamp(LOG_NOTICE, stat->time_total,
+                "client_e2e p99_ms=%.6f p999_ms=%.6f",
+                SEC2MS(stat->latency_p99),
+                SEC2MS(stat->latency_p999));
   if (sig != SIGALRM)
     return;
 
@@ -223,6 +227,8 @@ void sb_report_intermediate(sb_stat_t *stat)
       " completed=%" PRIu64 " scheduled_total=%" PRIu64
       " offered_total=%" PRIu64 " sent_total=%" PRIu64
       " started_total=%" PRIu64 " completed_total=%" PRIu64
+  const double percentiles[] = {sb_globals.percentile, 99.0, 99.9};
+  double values[3];
       " send_delay_avg_ms=%.6f send_delay_max_ms=%.6f"
       " queue=%" PRIu64 " inflight=%" PRIu64 " errors=%" PRIu64
       " timeouts=%u",
@@ -272,9 +278,11 @@ static void report_intermediate(void)
   sb_counters_agg_intermediate(cnt);
   report_get_common_stat(&stat, cnt);
 
-  stat.latency_pct =
-    MS2SEC(sb_histogram_get_pct_intermediate(&sb_latency_histogram,
-                                             sb_globals.percentile));
+  sb_histogram_get_pcts_intermediate(&sb_latency_histogram, percentiles,
+                                     values, 3);
+  stat.latency_pct = MS2SEC(values[0]);
+  stat.latency_p99 = MS2SEC(values[1]);
+  stat.latency_p999 = MS2SEC(values[2]);
 
   stat.time_interval = NS2SEC(sb_timer_current(&sb_intermediate_timer));
 
@@ -312,6 +320,12 @@ void sb_report_cumulative(sb_stat_t *stat)
   {
     /*
       In case we print statistics on forced shutdown, there may be (potentially
+  log_text(LOG_NOTICE,
+           "client_e2e_window interval_s=%.6f end_s=%.6f events=%" PRIu64
+           " p99_ms=%.6f p999_ms=%.6f",
+           stat->time_interval, stat->time_total, stat->events,
+           SEC2MS(stat->latency_p99), SEC2MS(stat->latency_p999));
+
       long running or hung) transactions which are still in progress.
 
       We still want to reflect them in statistics, so stop running timers to
@@ -372,6 +386,8 @@ void sb_report_cumulative(sb_stat_t *stat)
   for(unsigned i = 0; i < nthreads; i++)
     t = sb_timer_merge(&t, &timers_copy[i]);
 
+  const double percentiles[] = {sb_globals.percentile, 99.0, 99.9};
+  double values[3];
   /* Calculate and print events distribution by threads */
   const double events_avg = (double) t.events / nthreads;
   const double time_avg = stat->latency_sum / nthreads;
@@ -428,9 +444,11 @@ static void checkpoint(sb_stat_t *stat)
 
   stat->time_interval = NS2SEC(sb_timer_current(&sb_checkpoint_timer));
 
-  stat->latency_pct =
-    MS2SEC(sb_histogram_get_pct_checkpoint(&sb_latency_histogram,
-                                           sb_globals.percentile));
+  sb_histogram_get_pcts_checkpoint(&sb_latency_histogram, percentiles,
+                                   values, 3);
+  stat->latency_pct = MS2SEC(values[0]);
+  stat->latency_p99 = MS2SEC(values[1]);
+  stat->latency_p999 = MS2SEC(values[2]);
 
   /* Atomically reset each timer after copying it into its timers_copy slot */
   for (size_t i = 0; i < sb_globals.threads; i++)

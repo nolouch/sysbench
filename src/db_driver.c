@@ -1095,6 +1095,10 @@ void db_report_intermediate(sb_stat_t *stat)
                 SEC2MS(stat->latency_pct),
                 stat->errors / seconds,
                 stat->reconnects / seconds);
+  log_timestamp(LOG_NOTICE, stat->time_total,
+                "client_e2e p99_ms=%.6f p999_ms=%.6f",
+                SEC2MS(stat->latency_p99),
+                SEC2MS(stat->latency_p999));
 
   if (sb_globals.tx_rate > 0)
   {
