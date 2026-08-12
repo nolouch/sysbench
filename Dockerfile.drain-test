@@ -1,0 +1,18 @@
+FROM registry-mirror.pingcap.net/library/ubuntu:22.04 AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential autoconf automake libtool pkg-config ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+RUN ./autogen.sh \
+ && ./configure --without-mysql --without-pgsql \
+ && make -j"$(nproc)" \
+ && gcc -std=gnu11 -D_GNU_SOURCE -DHAVE_CONFIG_H -Iconfig -Isrc \
+      -Ithird_party/concurrency_kit/include -Ithird_party/luajit/inc \
+      tests/drain_contract.c -o /tmp/drain_contract \
+ && /tmp/drain_contract \
+ && tests/sigusr2-drain-smoke.sh
+
+FROM registry-mirror.pingcap.net/library/ubuntu:22.04
+COPY --from=builder /src/src/sysbench /usr/local/bin/sysbench
+ENTRYPOINT ["/usr/local/bin/sysbench"]

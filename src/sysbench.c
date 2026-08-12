@@ -67,6 +67,7 @@
 #include <luajit.h>
 
 #include "sysbench.h"
+#include "sb_drain.h"
 #include "sb_options.h"
 #include "sb_lua.h"
 #include "db_driver.h"
@@ -161,6 +162,25 @@ static uint64_t telemetry_prev[TEL_COUNT];
 static uint64_t send_delay_ns_sum CK_CC_CACHELINE;
 static uint64_t send_delay_ns_max CK_CC_CACHELINE;
 static uint64_t send_delay_ns_sum_prev;
+static volatile sig_atomic_t admission_stop_requested;
+static uint64_t drain_started_ns CK_CC_CACHELINE;
+
+static void sigusr2_admission_stop_handler(int sig)
+{
+  if (sig == SIGUSR2)
+    admission_stop_requested = 1;
+}
+
+static void stop_event_admission(void)
+{
+  if (ck_pr_load_64(&drain_started_ns) == 0)
+  {
+    ck_pr_store_64(&drain_started_ns, sb_timer_value(&sb_exec_timer));
+    log_text(LOG_NOTICE, "client_drain_admission_v1 offered=%" PRIu64,
+             ck_pr_load_64(&telemetry[TEL_OFFERED]));
+  }
+  pthread_cond_broadcast(&queue_cond);
+}
 
 static void telemetry_max(uint64_t *target, uint64_t value)
 {
@@ -764,6 +784,22 @@ bool sb_more_events(int thread_id)
   if (sb_globals.error)
     return false;
 
+  /* During a requested drain, admitted rate-mode events take precedence over
+     the ordinary time/event limits. */
+  if (sb_globals.tx_rate > 0 && admission_stop_requested)
+  {
+    void *ptr = NULL;
+    if (!ck_ring_dequeue_spmc(&queue_ring, queue_ring_buffer, &ptr))
+      return false;
+
+    ck_pr_inc_int(&sb_globals.concurrency);
+    sb_scheduled_event_t *scheduled = ptr;
+    const uint64_t now = sb_timer_value(&sb_exec_timer);
+    timers[thread_id].queue_time = now - scheduled->offered_ns;
+    event_deadlines[thread_id] = scheduled->deadline_ns;
+    return true;
+  }
+
   /* Check if we have a time limit */
   if (sb_globals.max_time_ns > 0 &&
       SB_UNLIKELY(sb_timer_value(&sb_exec_timer) >= sb_globals.max_time_ns))
@@ -976,6 +1012,12 @@ static void *eventgen_thread_proc(void *arg)
 
   for (int i = 0; ; i = (i+1) % MAX_QUEUE_LEN)
   {
+    if (admission_stop_requested)
+    {
+      stop_event_admission();
+      return NULL;
+    }
+
     curr_ns = sb_timer_value(&sb_exec_timer);
     intr_ns = sb_rand_exp(lambda);
     next_ns += intr_ns;
@@ -991,6 +1033,13 @@ static void *eventgen_thread_proc(void *arg)
 
     if (next_ns > curr_ns)
       sb_nanosleep(next_ns - curr_ns);
+
+    /* SIGUSR2 may arrive while sleeping. Never offer/enqueue after it. */
+    if (admission_stop_requested)
+    {
+      stop_event_admission();
+      return NULL;
+    }
 
     /* Enqueue a new event */
     queue_array[i].deadline_ns = next_ns;
@@ -1151,6 +1200,10 @@ static int run_test(sb_test_t *test)
   unsigned int barrier_threads;
   uint64_t     old_max_events = 0;
 
+  admission_stop_requested = 0;
+  ck_pr_store_64(&drain_started_ns, 0);
+  signal(SIGUSR2, sigusr2_admission_stop_handler);
+
   /* initialize test */
   if (test->ops.init != NULL && test->ops.init() != 0)
     return 1;
@@ -1301,6 +1354,28 @@ static int run_test(sb_test_t *test)
 #endif
 
   log_text(LOG_INFO, "Done.\n");
+
+  if (admission_stop_requested && sb_globals.tx_rate > 0)
+  {
+    const uint64_t completed = ck_pr_load_64(&telemetry[TEL_COMPLETED]);
+    const uint64_t started = ck_pr_load_64(&telemetry[TEL_STARTED]);
+    const uint64_t offered = ck_pr_load_64(&telemetry[TEL_OFFERED]);
+    const uint64_t queue = ck_ring_size(&queue_ring);
+    const uint64_t inflight = ck_pr_load_int(&sb_globals.concurrency);
+    const uint64_t started_ns = ck_pr_load_64(&drain_started_ns);
+    const uint64_t duration_ns = started_ns > 0
+      ? sb_timer_value(&sb_exec_timer) - started_ns : 0;
+    const char *outcome = sb_drain_is_complete(queue, inflight,
+                                               started, completed)
+      ? "drained" : "incomplete";
+    log_text(LOG_NOTICE,
+             "client_drain_v1 duration_ms=%.6f offered=%" PRIu64
+             " started=%" PRIu64 " completed=%" PRIu64
+             " final_queue=%" PRIu64 " inflight=%" PRIu64
+             " outcome=%s",
+             NS2MS(duration_ns), offered, started, completed, queue, inflight,
+             outcome);
+  }
 
   /* cleanup test */
   if (test->ops.cleanup != NULL && test->ops.cleanup() != 0)

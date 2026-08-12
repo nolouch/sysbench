@@ -119,6 +119,7 @@ typedef struct {
   uint64_t send_delay_ns_sum_total, send_delay_ns_max_total;
 } sb_stat_t;
 
+/* Pure drain invariant shared by the runtime marker and its C unit test. */
 /* Commands */
 
 typedef int sb_builtin_cmd_func_t(void);
