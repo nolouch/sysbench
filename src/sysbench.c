@@ -178,6 +178,7 @@ static void stop_event_admission(void)
     ck_pr_store_64(&drain_started_ns, sb_timer_value(&sb_exec_timer));
     log_text(LOG_NOTICE, "client_drain_admission_v1 offered=%" PRIu64,
              ck_pr_load_64(&telemetry[TEL_OFFERED]));
+    log_text(LOG_NOTICE, "client_drain_stage_v1 stage=signal_seen");
   }
   pthread_cond_broadcast(&queue_cond);
 }
@@ -1352,8 +1353,12 @@ static int run_test(sb_test_t *test)
     return 1;
   }
 
+  if (admission_stop_requested)
+    log_text(LOG_NOTICE, "client_drain_stage_v1 stage=workers_join_begin");
   if ((err = sb_thread_join_workers()))
     return err;
+  if (admission_stop_requested)
+    log_text(LOG_NOTICE, "client_drain_stage_v1 stage=workers_join_end");
 
   sb_timer_stop(&sb_exec_timer);
   sb_timer_stop(&sb_intermediate_timer);
@@ -1391,14 +1396,20 @@ static int run_test(sb_test_t *test)
   }
 
   /* cleanup test */
+  if (admission_stop_requested)
+    log_text(LOG_NOTICE, "client_drain_stage_v1 stage=lua_cleanup_begin");
   if (test->ops.cleanup != NULL && test->ops.cleanup() != 0)
     return 1;
+  if (admission_stop_requested)
+    log_text(LOG_NOTICE, "client_drain_stage_v1 stage=lua_cleanup_end");
 
   if (report_thread_created)
   {
     if (sb_thread_cancel(report_thread) || sb_thread_join(report_thread, NULL))
       log_errno(LOG_FATAL, "Terminating the reporting thread failed.");
   }
+  if (admission_stop_requested)
+    log_text(LOG_NOTICE, "client_drain_stage_v1 stage=reporter_joined");
 
   if (eventgen_thread_created)
   {
@@ -1410,6 +1421,8 @@ static int run_test(sb_test_t *test)
          sb_thread_join(eventgen_thread, NULL)) && sb_globals.max_time_ns == 0)
       log_text(LOG_FATAL, "Terminating the event generator thread failed.");
   }
+  if (admission_stop_requested)
+    log_text(LOG_NOTICE, "client_drain_stage_v1 stage=eventgen_joined");
 
   if (checkpoints_thread_created)
   {
