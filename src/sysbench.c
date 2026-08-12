@@ -192,10 +192,6 @@ static void print_run_mode(sb_test_t *);
 #ifdef HAVE_ALARM
 static void sigalrm_thread_init_timeout_handler(int sig)
 {
-  log_timestamp(LOG_NOTICE, stat->time_total,
-                "client_e2e p99_ms=%.6f p999_ms=%.6f",
-                SEC2MS(stat->latency_p99),
-                SEC2MS(stat->latency_p999));
   if (sig != SIGALRM)
     return;
 
@@ -216,6 +212,9 @@ void sb_report_intermediate(sb_stat_t *stat)
                 stat->events / stat->time_interval,
                 sb_globals.percentile,
                 SEC2MS(stat->latency_pct));
+  log_timestamp(LOG_NOTICE, stat->time_total,
+                "client_e2e p99_ms=%.6f p999_ms=%.6f",
+                SEC2MS(stat->latency_p99), SEC2MS(stat->latency_p999));
   if (sb_globals.tx_rate > 0)
   {
     log_timestamp(LOG_NOTICE, stat->time_total,
@@ -227,8 +226,6 @@ void sb_report_intermediate(sb_stat_t *stat)
       " completed=%" PRIu64 " scheduled_total=%" PRIu64
       " offered_total=%" PRIu64 " sent_total=%" PRIu64
       " started_total=%" PRIu64 " completed_total=%" PRIu64
-  const double percentiles[] = {sb_globals.percentile, 99.0, 99.9};
-  double values[3];
       " send_delay_avg_ms=%.6f send_delay_max_ms=%.6f"
       " queue=%" PRIu64 " inflight=%" PRIu64 " errors=%" PRIu64
       " timeouts=%u",
@@ -322,12 +319,6 @@ void sb_report_cumulative(sb_stat_t *stat)
   {
     /*
       In case we print statistics on forced shutdown, there may be (potentially
-  log_text(LOG_NOTICE,
-           "client_e2e_window interval_s=%.6f end_s=%.6f events=%" PRIu64
-           " p99_ms=%.6f p999_ms=%.6f",
-           stat->time_interval, stat->time_total, stat->events,
-           SEC2MS(stat->latency_p99), SEC2MS(stat->latency_p999));
-
       long running or hung) transactions which are still in progress.
 
       We still want to reflect them in statistics, so stop running timers to
@@ -352,6 +343,12 @@ void sb_report_cumulative(sb_stat_t *stat)
                "forced shutdown: %u", unfinished);
     }
   }
+
+  log_text(LOG_NOTICE,
+           "client_e2e_window interval_s=%.6f end_s=%.6f events=%" PRIu64
+           " p99_ms=%.6f p999_ms=%.6f",
+           stat->time_interval, stat->time_total, stat->events,
+           SEC2MS(stat->latency_p99), SEC2MS(stat->latency_p999));
 
   log_text(LOG_NOTICE, "");
   log_text(LOG_NOTICE, "Throughput:");
